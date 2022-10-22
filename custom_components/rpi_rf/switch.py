@@ -1,7 +1,6 @@
 """Support for a switch using a 433MHz module via GPIO on a Raspberry Pi."""
 from __future__ import annotations
 
-import importlib
 import logging
 from threading import RLock
 
@@ -19,6 +18,7 @@ from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from .rfdevice import RFDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,11 +60,8 @@ def setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Find and return switches controlled by a generic RF device via GPIO."""
-
-    rpi_rf = importlib.import_module("rpi_rf")
-
     gpio = config[CONF_GPIO]
-    rfdevice = rpi_rf.RFDevice(gpio)
+    rfdevice = RFDevice(gpio)
     rfdevice_lock = RLock()
     switches = config[CONF_SWITCHES]
 
@@ -85,7 +82,10 @@ def setup_platform(
             )
         )
     if devices:
-        rfdevice.enable_tx()
+        if config[CONF_GPIO] == 27:
+            rfdevice.enable_rx()
+        else:
+            rfdevice.enable_tx()
 
     add_entities(devices)
 
