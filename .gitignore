@@ -1,5 +1,5 @@
 # Gitignore settings for ha-rpi_rf
-
+.DS_Store
 # Ignored files
 testing.py
 

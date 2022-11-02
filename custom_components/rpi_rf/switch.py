@@ -1,7 +1,10 @@
 """Support for a switch using a 433MHz module via GPIO on a Raspberry Pi."""
 from __future__ import annotations
 
+import os
+import stat
 import logging
+import subprocess
 from threading import RLock
 
 import voluptuous as vol
@@ -10,37 +13,27 @@ from homeassistant.components.switch import PLATFORM_SCHEMA, SwitchEntity
 from homeassistant.const import (
     CONF_NAME,
     CONF_UNIQUE_ID,
-    CONF_PROTOCOL,
     CONF_SWITCHES,
-    EVENT_HOMEASSISTANT_STOP,
 )
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from .rfdevice import RFDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_CODE_OFF = "code_off"
-CONF_CODE_ON = "code_on"
+REMOTE_ID = "remote_id"
+SWITCH_ID = "switch_id"
 CONF_GPIO = "gpio"
-CONF_PULSELENGTH = "pulselength"
 CONF_SIGNAL_REPETITIONS = "signal_repetitions"
-CONF_LENGTH = "length"
 
-DEFAULT_PROTOCOL = 1
-DEFAULT_SIGNAL_REPETITIONS = 10
-DEFAULT_LENGTH = 24
+DEFAULT_SIGNAL_REPETITIONS = 1
 
 SWITCH_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_CODE_OFF): vol.All(cv.ensure_list_csv, [cv.positive_int]),
-        vol.Required(CONF_CODE_ON): vol.All(cv.ensure_list_csv, [cv.positive_int]),
-        vol.Optional(CONF_PULSELENGTH): cv.positive_int,
+        vol.Required(REMOTE_ID): cv.positive_int,
+        vol.Required(SWITCH_ID): cv.positive_int,
         vol.Optional(CONF_SIGNAL_REPETITIONS, default=DEFAULT_SIGNAL_REPETITIONS): cv.positive_int,
-        vol.Optional(CONF_PROTOCOL, default=DEFAULT_PROTOCOL): cv.positive_int,
-        vol.Optional(CONF_LENGTH, default=DEFAULT_LENGTH): cv.positive_int,
         vol.Optional(CONF_UNIQUE_ID): cv.string,
     }
 )
@@ -52,6 +45,13 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     }
 )
 
+WIRING_PI_GPIO = {
+    17: 0,      18: 1,
+    27: 2,
+    22: 3,      23: 4,
+                24: 5,
+                26: 6
+}
 
 def setup_platform(
     hass: HomeAssistant,
@@ -61,66 +61,60 @@ def setup_platform(
 ) -> None:
     """Find and return switches controlled by a generic RF device via GPIO."""
     gpio = config[CONF_GPIO]
-    rfdevice = RFDevice(gpio)
     rfdevice_lock = RLock()
     switches = config[CONF_SWITCHES]
 
     devices = []
     for dev_name, properties in switches.items():
         devices.append(
-            RPiRFSwitch(
+            ChaconSwitch(
                 properties.get(CONF_NAME, dev_name),
                 properties.get(CONF_UNIQUE_ID),
-                rfdevice,
+                gpio,
                 rfdevice_lock,
-                properties.get(CONF_PROTOCOL),
-                properties.get(CONF_PULSELENGTH),
-                properties.get(CONF_LENGTH),
-                properties.get(CONF_SIGNAL_REPETITIONS),
-                properties.get(CONF_CODE_ON),
-                properties.get(CONF_CODE_OFF),
+                properties.get(REMOTE_ID),
+                properties.get(SWITCH_ID),
+                properties.get(CONF_SIGNAL_REPETITIONS)
             )
         )
-    if devices:
-        if config[CONF_GPIO] == 27:
-            rfdevice.enable_rx()
-        else:
-            rfdevice.enable_tx()
 
     add_entities(devices)
 
-    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, lambda event: rfdevice.cleanup())
 
-
-class RPiRFSwitch(SwitchEntity):
+class ChaconSwitch(SwitchEntity):
     """Representation of a GPIO RF switch."""
 
     def __init__(
         self,
         name,
         unique_id,
-        rfdevice,
+        gpio,
         lock,
-        protocol,
-        pulselength,
-        length,
+        remote_id,
+        switch_id,
         signal_repetitions,
-        code_on,
-        code_off,
     ):
         """Initialize the switch."""
         self._name = name
-        self._attr_unique_id = unique_id if unique_id else "{}_{}".format(code_on, code_off)
+        self._attr_unique_id = unique_id if unique_id else "{}_{}".format(remote_id, switch_id)
         self._state = False
-        self._rfdevice = rfdevice
+        self._gpio = WIRING_PI_GPIO[gpio]
         self._lock = lock
-        self._protocol = protocol
-        self._pulselength = pulselength
-        self._length = length
-        self._code_on = code_on
-        self._code_off = code_off
-        self._rfdevice.tx_repeat = signal_repetitions
-    
+        self._remote_id = remote_id
+        self._switch_id = switch_id
+        self._tx_repeat = signal_repetitions
+
+        chacon_path = os.path.realpath(os.path.dirname(__file__))
+        self._chacon_env = os.environ.copy()
+        try:
+            self._chacon_env["LD_LIBRARY_PATH"] = f'{chacon_path}:' + self._chacon_env["LD_LIBRARY_PATH"]
+        except KeyError:
+            self._chacon_env["LD_LIBRARY_PATH"] = chacon_path
+
+        self._chacon_send = os.path.join(chacon_path, "chacon_send")
+        st = os.stat(self._chacon_send)
+        os.chmod(self._chacon_send, st.st_mode | stat.S_IEXEC)
+
     @property
     def should_poll(self):
         """No polling needed."""
@@ -136,22 +130,22 @@ class RPiRFSwitch(SwitchEntity):
         """Return true if device is on."""
         return self._state
 
-    def _send_code(self, code_list, protocol, pulselength, length):
-        """Send the code(s) with a specified pulselength."""
-        with self._lock:
-            _LOGGER.info("Sending code(s): %s", code_list)
-            for code in code_list:
-                self._rfdevice.tx_code(code, protocol, pulselength, length)
-        return True
-
     def turn_on(self, **kwargs):
         """Turn the switch on."""
-        if self._send_code(self._code_on, self._protocol, self._pulselength, self._length):
+        _LOGGER.info(" ".join([self._chacon_send, f'{self._gpio}', f'{self._remote_id}', f'{self._switch_id}', "off", f'{self._tx_repeat}']))
+        output = subprocess.run([self._chacon_send, f'{self._gpio}', f'{self._remote_id}', f'{self._switch_id}', "on", f'{self._tx_repeat}'],
+                                env=self._chacon_env, capture_output=True)
+        _LOGGER.info(output.stdout)
+        if output.returncode == 0:
             self._state = True
             self.schedule_update_ha_state()
 
     def turn_off(self, **kwargs):
         """Turn the switch off."""
-        if self._send_code(self._code_off, self._protocol, self._pulselength, self._length):
+        _LOGGER.info(" ".join([self._chacon_send, f'{self._gpio}', f'{self._remote_id}', f'{self._switch_id}', "off", f'{self._tx_repeat}']))
+        output = subprocess.run([self._chacon_send, f'{self._gpio}', f'{self._remote_id}', f'{self._switch_id}', "off", f'{self._tx_repeat}'],
+                                env=self._chacon_env, capture_output=True)
+        _LOGGER.info(output.stdout)
+        if output.returncode == 0:
             self._state = False
             self.schedule_update_ha_state()

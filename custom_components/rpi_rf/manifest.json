@@ -1,10 +1,10 @@
 {
-    "domain": "rpi_rf",
-    "name": "Raspberry Pi RF",
-    "documentation": "https://github.com/markvader/ha-rpi_rf",
-    "issue_tracker": "https://github.com/markvader/ha-rpi_rf/issues",
-    "requirements": ["RPi.GPIO==0.7.1", "rpi-rf==0.9.7"],
-    "codeowners": ["@markvader"],
+    "domain": "chacon_rpi_switch",
+    "name": "Raspberry Pi Chacon RF",
+    "documentation": "https://github.com/bjoernStriebing/chacon_rpi_switch",
+    "issue_tracker": "https://github.com/bjoernStriebing/chacon_rpi_switch/issues",
+    "requirements": [],
+    "codeowners": ["@bjoernStriebing"],
     "iot_class": "assumed_state",
     "version": "2022.9.0"
   }
